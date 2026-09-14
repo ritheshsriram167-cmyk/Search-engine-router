@@ -1,0 +1,38 @@
+{
+  "name": "such-engine-rotor",
+  "version": "1.0.0",
+  "description": "Multi-layer API key rotation search routing engine with Supabase persistence and SSE streaming",
+  "main": "server/index.js",
+  "type": "module",
+  "scripts": {
+    "dev:server": "node server/index.js",
+    "dev:client": "vite client",
+    "dev": "vite client",
+    "build": "vite build client",
+    "start": "node server/index.js"
+  },
+  "keywords": [
+    "search-engine",
+    "api-rotator",
+    "gemini",
+    "supabase",
+    "render",
+    "sse-streaming"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "lucide-react": "^0.475.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.15.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.14"
+  }
+}
