@@ -353,12 +353,31 @@ function KeyRow({ k, onDelete }) {
       display: 'flex', alignItems: 'center', gap: 14, padding: '10px 0',
       borderBottom: `1px solid ${C.borderSoft}`,
     }}>
-      <StatusDot color={keyStatusColor(k.status)} pulse={k.status === 'active'} />
+      {/* Green light for active, Red light for failed / unverified */}
+      <StatusDot
+        color={k.status === 'active' ? C.success : C.danger}
+        pulse={k.status === 'active'}
+      />
       <span style={{ fontFamily: fontMono, fontSize: 12.5, color: C.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {k.masked}
       </span>
-      <span style={{ fontFamily: fontMono, fontSize: 11.5, color: k.status === 'active' ? C.textFaint : keyStatusColor(k.status), flexShrink: 0, width: 92 }}>
-        {k.status}
+      {/* Auto-detected Provider Service Badge */}
+      {k.detected_service && (
+        <span style={{
+          background: C.panelAlt, border: `1px solid ${C.borderSoft}`, borderRadius: 4,
+          padding: '2px 8px', fontFamily: fontMono, fontSize: 11, color: C.accent, flexShrink: 0,
+        }}>
+          {k.detected_service}
+        </span>
+      )}
+      {/* Status indicator: Green (Verified & Active) / Red (Failed) */}
+      <span style={{
+        fontFamily: fontMono, fontSize: 11.5,
+        color: k.status === 'active' ? C.success : C.danger,
+        flexShrink: 0, width: 96, display: 'flex', alignItems: 'center', gap: 4,
+      }}>
+        <span style={{ width: 6, height: 6, borderRadius: '50%', background: k.status === 'active' ? C.success : C.danger }} />
+        {k.status === 'active' ? 'Verified' : 'Invalid/401'}
       </span>
       <span style={{ fontFamily: fontMono, fontSize: 11.5, color: C.textFaint, flexShrink: 0, width: 78, textAlign: 'right' }}>
         {k.lastUsed || 'never'}
@@ -377,10 +396,17 @@ function KeyRow({ k, onDelete }) {
 
 function AddKeyRow({ onAdd, placeholder }) {
   const [input, setInput] = useState('');
-  const submit = () => {
-    if (!input.trim()) return;
-    onAdd(input.trim());
-    setInput('');
+  const [validating, setValidating] = useState(false);
+
+  const submit = async () => {
+    if (!input.trim() || validating) return;
+    setValidating(true);
+    try {
+      await onAdd(input.trim());
+      setInput('');
+    } finally {
+      setValidating(false);
+    }
   };
   return (
     <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
@@ -388,7 +414,8 @@ function AddKeyRow({ onAdd, placeholder }) {
         value={input}
         onChange={e => setInput(e.target.value)}
         onKeyDown={e => e.key === 'Enter' && submit()}
-        placeholder={placeholder || 'Paste a new API key'}
+        disabled={validating}
+        placeholder={placeholder || 'Paste API key (e.g. Gemini, NewsAPI, Tavily, SerpAPI, Brave)'}
         aria-label={placeholder || 'Paste a new API key'}
         style={{
           flex: 1, minWidth: 0, background: C.bg, border: `1px solid ${C.borderSoft}`, borderRadius: 6,
@@ -398,19 +425,30 @@ function AddKeyRow({ onAdd, placeholder }) {
       <button
         className="add-btn"
         onClick={submit}
+        disabled={validating}
         style={{
           background: C.accentSoft, color: C.accent, border: 'none', borderRadius: 6,
-          padding: '8px 16px', fontFamily: fontHead, fontSize: 13, fontWeight: 600, cursor: 'pointer', flexShrink: 0,
+          padding: '8px 16px', fontFamily: fontHead, fontSize: 13, fontWeight: 600, cursor: validating ? 'not-allowed' : 'pointer', flexShrink: 0,
         }}
       >
-        Add
+        {validating ? 'Verifying...' : 'Add Key'}
       </button>
     </div>
   );
 }
 
-function ProviderRow({ provider, expanded, onToggle, onAddKey, onDeleteKey, onDeleteProvider }) {
+function ProviderRow({ provider, expanded, onToggle, onAddKey, onDeleteKey, onDeleteProvider, onUpdateTier }) {
   const status = providerStatus(provider.keys);
+  const tier = provider.tier || 'middle';
+
+  const tierColors = {
+    top: { bg: 'rgba(62,207,142,0.12)', border: 'rgba(62,207,142,0.3)', text: C.success, label: 'TOP TIER' },
+    middle: { bg: 'rgba(255,138,66,0.12)', border: 'rgba(255,138,66,0.3)', text: C.accent, label: 'MIDDLE TIER' },
+    bottom: { bg: 'rgba(107,114,128,0.15)', border: 'rgba(107,114,128,0.3)', text: C.textFaint, label: 'BOTTOM TIER' },
+  };
+
+  const currentTierBadge = tierColors[tier] || tierColors.middle;
+
   return (
     <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, marginBottom: 10, overflow: 'hidden' }}>
       <button
@@ -424,9 +462,37 @@ function ProviderRow({ provider, expanded, onToggle, onAddKey, onDeleteKey, onDe
       >
         <StatusDot color={statusColor(status)} pulse={status === 'healthy'} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontFamily: fontHead, fontSize: 14.5, fontWeight: 600, color: C.text }}>{provider.name}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontFamily: fontHead, fontSize: 14.5, fontWeight: 600, color: C.text }}>{provider.name}</span>
+            <span style={{
+              background: currentTierBadge.bg, border: `1px solid ${currentTierBadge.border}`,
+              color: currentTierBadge.text, fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 4, fontFamily: fontMono,
+            }}>
+              {currentTierBadge.label}
+            </span>
+          </div>
           <div style={{ fontFamily: fontHead, fontSize: 12, color: C.textFaint, marginTop: 1 }}>{provider.category}</div>
         </div>
+
+        {/* Tier Priority Selector */}
+        <div style={{ display: 'flex', gap: 4, marginRight: 8 }} onClick={e => e.stopPropagation()}>
+          {['top', 'middle', 'bottom'].map(t => (
+            <button
+              key={t}
+              onClick={() => onUpdateTier(provider.id, t)}
+              style={{
+                background: tier === t ? C.accent : C.panelAlt,
+                color: tier === t ? '#1A0F05' : C.textFaint,
+                border: `1px solid ${tier === t ? C.accent : C.borderSoft}`,
+                borderRadius: 4, padding: '3px 7px', fontSize: 10, fontWeight: 600,
+                cursor: 'pointer', textTransform: 'capitalize', fontFamily: fontHead
+              }}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+
         <span style={{ fontFamily: fontMono, fontSize: 12, color: statusColor(status), flexShrink: 0 }}>{statusLabel(status)}</span>
         <span style={{ fontFamily: fontMono, fontSize: 12, color: C.textFaint, flexShrink: 0, width: 64, textAlign: 'right' }}>
           {provider.keys.length} {provider.keys.length === 1 ? 'key' : 'keys'}
@@ -457,7 +523,7 @@ function ProviderRow({ provider, expanded, onToggle, onAddKey, onDeleteKey, onDe
         <div style={{ padding: '0 18px 18px', borderTop: `1px solid ${C.borderSoft}` }}>
           {provider.keys.length === 0 && (
             <p style={{ fontFamily: fontHead, fontSize: 13, color: C.textFaint, padding: '14px 0' }}>
-              No keys yet — add one below to start routing {provider.name.toLowerCase()} requests.
+              No keys yet — paste an API key below. Relay will auto-detect the service and run a live test.
             </p>
           )}
           {provider.keys.map(k => (
@@ -470,26 +536,36 @@ function ProviderRow({ provider, expanded, onToggle, onAddKey, onDeleteKey, onDe
   );
 }
 
-function ProvidersTab({ providers, addProvider, deleteProvider, addKey, deleteKey }) {
+function ProvidersTab({ providers, addProvider, deleteProvider, addKey, deleteKey, onUpdateTier }) {
   const [expandedId, setExpandedId] = useState(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newName, setNewName] = useState('');
   const [newCategory, setNewCategory] = useState('');
+  const [newTier, setNewTier] = useState('middle');
+  const [tierFilter, setTierFilter] = useState('all'); // 'all' | 'top' | 'middle' | 'bottom'
 
   const submitAddProvider = () => {
     if (!newName.trim()) return;
-    addProvider(newName.trim(), newCategory.trim());
+    addProvider(newName.trim(), newCategory.trim(), null, newTier);
     setNewName('');
     setNewCategory('');
+    setNewTier('middle');
     setShowAddModal(false);
   };
 
+  // Group providers by tier
+  const topProviders = providers.filter(p => (p.tier || 'middle') === 'top');
+  const middleProviders = providers.filter(p => (p.tier || 'middle') === 'middle');
+  const bottomProviders = providers.filter(p => (p.tier || 'middle') === 'bottom');
+
   return (
-    <div style={{ maxWidth: 760 }}>
+    <div style={{ maxWidth: 820 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 24, gap: 16, flexWrap: 'wrap' }}>
         <div>
-          <h1 style={{ fontFamily: fontHead, fontSize: 24, fontWeight: 600, color: C.text, margin: '0 0 6px' }}>Providers</h1>
-          <p style={{ fontFamily: fontHead, fontSize: 14, color: C.textSoft, margin: 0 }}>Keys are grouped by category and rotated automatically.</p>
+          <h1 style={{ fontFamily: fontHead, fontSize: 24, fontWeight: 600, color: C.text, margin: '0 0 6px' }}>Providers &amp; Priority Tiers</h1>
+          <p style={{ fontFamily: fontHead, fontSize: 14, color: C.textSoft, margin: 0 }}>
+            Providers are grouped into Top, Middle, and Bottom tiers. Keys are tested live (Green = Verified, Red = Failed).
+          </p>
         </div>
         <button
           className="primary-btn"
@@ -504,6 +580,29 @@ function ProvidersTab({ providers, addProvider, deleteProvider, addKey, deleteKe
         </button>
       </div>
 
+      {/* Tier Filter Tabs */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+        {[
+          { id: 'all', label: `All Providers (${providers.length})` },
+          { id: 'top', label: `Top Tier (${topProviders.length})`, color: C.success },
+          { id: 'middle', label: `Middle Tier (${middleProviders.length})`, color: C.accent },
+          { id: 'bottom', label: `Bottom Tier (${bottomProviders.length})`, color: C.textFaint },
+        ].map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setTierFilter(tab.id)}
+            style={{
+              padding: '6px 14px', borderRadius: 6, fontFamily: fontHead, fontSize: 12.5, fontWeight: 600,
+              cursor: 'pointer', border: `1px solid ${tierFilter === tab.id ? (tab.color || C.accent) : C.borderSoft}`,
+              background: tierFilter === tab.id ? (tab.color ? 'rgba(62,207,142,0.1)' : C.accentSoft) : C.panel,
+              color: tierFilter === tab.id ? (tab.color || C.accent) : C.textSoft,
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
       {providers.length === 0 && (
         <div style={{ background: C.panel, border: `1px dashed ${C.border}`, borderRadius: 10, padding: 40, textAlign: 'center' }}>
           <Server size={22} color={C.textFaint} style={{ marginBottom: 14 }} />
@@ -513,17 +612,77 @@ function ProvidersTab({ providers, addProvider, deleteProvider, addKey, deleteKe
         </div>
       )}
 
-      {providers.map(p => (
-        <ProviderRow
-          key={p.id}
-          provider={p}
-          expanded={expandedId === p.id}
-          onToggle={() => setExpandedId(expandedId === p.id ? null : p.id)}
-          onAddKey={addKey}
-          onDeleteKey={deleteKey}
-          onDeleteProvider={deleteProvider}
-        />
-      ))}
+      {/* Top Tier Section */}
+      {(tierFilter === 'all' || tierFilter === 'top') && topProviders.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: C.success }} />
+            <span style={{ fontFamily: fontHead, fontSize: 13, fontWeight: 700, color: C.success, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              Top Tier Providers (Primary High-Priority)
+            </span>
+          </div>
+          {topProviders.map(p => (
+            <ProviderRow
+              key={p.id}
+              provider={p}
+              expanded={expandedId === p.id}
+              onToggle={() => setExpandedId(expandedId === p.id ? null : p.id)}
+              onAddKey={addKey}
+              onDeleteKey={deleteKey}
+              onDeleteProvider={deleteProvider}
+              onUpdateTier={onUpdateTier}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Middle Tier Section */}
+      {(tierFilter === 'all' || tierFilter === 'middle') && middleProviders.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: C.accent }} />
+            <span style={{ fontFamily: fontHead, fontSize: 13, fontWeight: 700, color: C.accent, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              Middle Tier Providers (Secondary / Fallback)
+            </span>
+          </div>
+          {middleProviders.map(p => (
+            <ProviderRow
+              key={p.id}
+              provider={p}
+              expanded={expandedId === p.id}
+              onToggle={() => setExpandedId(expandedId === p.id ? null : p.id)}
+              onAddKey={addKey}
+              onDeleteKey={deleteKey}
+              onDeleteProvider={deleteProvider}
+              onUpdateTier={onUpdateTier}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Bottom Tier Section */}
+      {(tierFilter === 'all' || tierFilter === 'bottom') && bottomProviders.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: C.textFaint }} />
+            <span style={{ fontFamily: fontHead, fontSize: 13, fontWeight: 700, color: C.textFaint, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              Bottom Tier Providers (Long-Tail / Bulk)
+            </span>
+          </div>
+          {bottomProviders.map(p => (
+            <ProviderRow
+              key={p.id}
+              provider={p}
+              expanded={expandedId === p.id}
+              onToggle={() => setExpandedId(expandedId === p.id ? null : p.id)}
+              onAddKey={addKey}
+              onDeleteKey={deleteKey}
+              onDeleteProvider={deleteProvider}
+              onUpdateTier={onUpdateTier}
+            />
+          ))}
+        </div>
+      )}
 
       {showAddModal && (
         <Modal title="Add provider" onClose={() => setShowAddModal(false)}>
@@ -533,19 +692,43 @@ function ProvidersTab({ providers, addProvider, deleteProvider, addKey, deleteKe
               value={newName}
               onChange={e => setNewName(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && submitAddProvider()}
-              placeholder="e.g. Weather"
+              placeholder="e.g. Weather or Google News"
               style={{ width: '100%', boxSizing: 'border-box', background: C.bg, border: `1px solid ${C.borderSoft}`, borderRadius: 6, padding: '9px 12px', fontFamily: fontHead, fontSize: 13.5, color: C.text, outline: 'none' }}
             />
           </div>
-          <div style={{ marginBottom: 20 }}>
+          <div style={{ marginBottom: 16 }}>
             <label style={{ fontFamily: fontHead, fontSize: 12.5, color: C.textFaint, display: 'block', marginBottom: 6 }}>Category</label>
             <input
               value={newCategory}
               onChange={e => setNewCategory(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && submitAddProvider()}
-              placeholder="e.g. Weather data"
+              placeholder="e.g. News & media"
               style={{ width: '100%', boxSizing: 'border-box', background: C.bg, border: `1px solid ${C.borderSoft}`, borderRadius: 6, padding: '9px 12px', fontFamily: fontHead, fontSize: 13.5, color: C.text, outline: 'none' }}
             />
+          </div>
+          <div style={{ marginBottom: 20 }}>
+            <label style={{ fontFamily: fontHead, fontSize: 12.5, color: C.textFaint, display: 'block', marginBottom: 6 }}>Priority Tier</label>
+            <div style={{ display: 'flex', gap: 10 }}>
+              {['top', 'middle', 'bottom'].map(tier => (
+                <label key={tier} style={{
+                  flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                  background: newTier === tier ? C.accentSoft : C.bg,
+                  border: `1px solid ${newTier === tier ? C.accent : C.borderSoft}`,
+                  borderRadius: 6, padding: '9px', cursor: 'pointer', fontFamily: fontHead, fontSize: 12.5,
+                  color: newTier === tier ? C.accent : C.textSoft, textTransform: 'capitalize'
+                }}>
+                  <input
+                    type="radio"
+                    name="tier"
+                    value={tier}
+                    checked={newTier === tier}
+                    onChange={() => setNewTier(tier)}
+                    style={{ display: 'none' }}
+                  />
+                  {tier} tier
+                </label>
+              ))}
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
             <button className="secondary-btn" onClick={() => setShowAddModal(false)} style={{ background: 'transparent', border: `1px solid ${C.border}`, color: C.textSoft, borderRadius: 7, padding: '8px 16px', fontFamily: fontHead, fontSize: 13.5, cursor: 'pointer' }}>Cancel</button>
@@ -1326,17 +1509,30 @@ export default function App() {
     }
   };
 
-  const handleAddProvider = async (name, category) => {
+  const handleAddProvider = async (name, category, endpoint_url, tier) => {
     try {
       const res = await fetch('/api/providers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, category }),
+        body: JSON.stringify({ name, category, endpoint_url, tier }),
       });
       const data = await res.json();
       if (data?.provider) setProviders(prev => [...prev, data.provider]);
     } catch (err) {
       console.error('Failed to add provider:', err);
+    }
+  };
+
+  const handleUpdateTier = async (providerId, newTier) => {
+    try {
+      setProviders(prev => prev.map(p => p.id === providerId ? { ...p, tier: newTier } : p));
+      await fetch(`/api/providers/${providerId}/tier`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tier: newTier }),
+      });
+    } catch (err) {
+      console.error('Failed to update provider tier:', err);
     }
   };
 
@@ -1431,6 +1627,7 @@ export default function App() {
             deleteProvider={handleDeleteProvider}
             addKey={handleAddProviderKey}
             deleteKey={handleDeleteProviderKey}
+            onUpdateTier={handleUpdateTier}
           />
         )}
         {active === 'dashboard' && (

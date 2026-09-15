@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   getProvidersWithKeys,
   addProvider,
+  updateProviderTier,
   deleteProvider,
   addProviderKey,
   deleteProviderKey
@@ -9,7 +10,7 @@ import {
 
 const router = Router();
 
-// GET all providers and their keys
+// GET all providers and their keys with tier and detected service
 router.get('/', async (req, res) => {
   try {
     const providers = await getProvidersWithKeys();
@@ -17,11 +18,14 @@ router.get('/', async (req, res) => {
       id: p.id,
       name: p.name,
       category: p.category,
+      tier: p.tier || 'middle',
       endpoint_url: p.endpoint_url,
       keys: (p.keys || []).map(k => ({
         id: k.id,
         masked: k.masked_key || k.masked,
-        status: k.status,
+        status: k.status, // 'active' (green) or 'failed' (red)
+        detected_service: k.detected_service || 'API Service',
+        validation_message: k.validation_message || (k.status === 'active' ? 'Active & verified' : 'Unverified / failed'),
         lastUsed: k.last_used ? new Date(k.last_used).toLocaleTimeString() : 'never',
         added: k.created_at ? new Date(k.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'recently',
       }))
@@ -32,15 +36,27 @@ router.get('/', async (req, res) => {
   }
 });
 
-// POST add new provider
+// POST add new provider with optional tier
 router.post('/', async (req, res) => {
   try {
-    const { name, category, endpoint_url } = req.body;
+    const { name, category, endpoint_url, tier } = req.body;
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Provider name is required' });
     }
-    const created = await addProvider(name, category, endpoint_url);
+    const created = await addProvider(name, category, endpoint_url, tier || 'middle');
     res.json({ provider: { ...created, keys: [] } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH update provider tier (top, middle, bottom)
+router.patch('/:id/tier', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { tier } = req.body;
+    const result = await updateProviderTier(id, tier);
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -57,7 +73,7 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// POST add key to provider
+// POST add key to provider with instant live test
 router.post('/:id/keys', async (req, res) => {
   try {
     const { id } = req.params;
@@ -71,6 +87,8 @@ router.post('/:id/keys', async (req, res) => {
         id: createdKey.id,
         masked: createdKey.masked_key,
         status: createdKey.status,
+        detected_service: createdKey.detected_service,
+        validation_message: createdKey.validation_message,
         lastUsed: 'never',
         added: 'just now',
       }
@@ -92,3 +110,4 @@ router.delete('/:id/keys/:keyId', async (req, res) => {
 });
 
 export default router;
+

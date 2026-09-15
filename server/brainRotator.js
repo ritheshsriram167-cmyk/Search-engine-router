@@ -117,11 +117,21 @@ export async function classifyQuery(query, availableProviders = []) {
     };
   }
 
-  const providerListStr = availableProviders
-    .map(p => `${p.id}: ${p.name} (${p.category})`)
+  // Sort and prioritize providers: Top tier first, then Middle, then Bottom.
+  // Prioritize providers that have at least one verified active key.
+  const tierWeight = { top: 1, middle: 2, bottom: 3 };
+  const sortedProviders = [...availableProviders].sort((a, b) => {
+    const aActive = (a.keys || []).filter(k => k.status === 'active').length > 0 ? 0 : 1;
+    const bActive = (b.keys || []).filter(k => k.status === 'active').length > 0 ? 0 : 1;
+    if (aActive !== bActive) return aActive - bActive;
+    return (tierWeight[a.tier] || 2) - (tierWeight[b.tier] || 2);
+  });
+
+  const providerListStr = sortedProviders
+    .map(p => `${p.id}: ${p.name} (${p.category}${p.tier ? `, ${p.tier} priority` : ''})`)
     .join(', ');
 
-  const systemInstruction = `You are an ultra-fast search router. Classify the user query into exactly ONE category ID from this list: [${providerListStr}]. Output ONLY the category ID (e.g. p1 or p2). Nothing else.`;
+  const systemInstruction = `You are an ultra-fast search router. Classify the user query into exactly ONE provider ID from this list: [${providerListStr}]. Prioritize top priority providers when multiple match. Output ONLY the provider ID (e.g. p1 or p2). Nothing else.`;
 
   // Try rotating through active keys on rate limits
   let attempts = 0;

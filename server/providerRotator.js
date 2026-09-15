@@ -1,10 +1,11 @@
 import { supabase, isSupabaseConfigured } from './supabase.js';
+import { testKeyLive, detectKeyProvider } from './keyValidator.js';
 
 let cachedProviders = [
-  { id: 'p1', name: 'News', category: 'News & media', endpoint_url: null, keys: [] },
-  { id: 'p2', name: 'Search', category: 'Web search', endpoint_url: null, keys: [] },
-  { id: 'p3', name: 'Data', category: 'Structured data', endpoint_url: null, keys: [] },
-  { id: 'p4', name: 'Database', category: 'Database lookup', endpoint_url: null, keys: [] },
+  { id: 'p1', name: 'News', category: 'News & media', tier: 'top', endpoint_url: null, keys: [] },
+  { id: 'p2', name: 'Search', category: 'Web search', tier: 'top', endpoint_url: null, keys: [] },
+  { id: 'p3', name: 'Data', category: 'Structured data', tier: 'middle', endpoint_url: null, keys: [] },
+  { id: 'p4', name: 'Database', category: 'Database lookup', tier: 'bottom', endpoint_url: null, keys: [] },
 ];
 
 let providerKeyPointers = {}; // Map of providerId -> currentIndex
@@ -39,9 +40,16 @@ export async function getProvidersWithKeys() {
                 k.status = 'active';
                 updateProviderKeyStatusInDb(k.id, 'active', null);
               }
-              return k;
+              return {
+                ...k,
+                detected_service: k.detected_service || detectKeyProvider(k.api_key).service,
+              };
             });
-          return { ...p, keys: pKeys };
+          return {
+            ...p,
+            tier: p.tier || 'middle', // 'top' | 'middle' | 'bottom'
+            keys: pKeys
+          };
         });
         lastFetchTime = now;
       }
@@ -53,13 +61,14 @@ export async function getProvidersWithKeys() {
   return cachedProviders;
 }
 
-export async function addProvider(name, category, endpointUrl = null) {
+export async function addProvider(name, category, endpointUrl = null, tier = 'middle') {
   const id = 'p' + Date.now();
   const newProvider = {
     id,
     name: name.trim(),
     category: (category || 'General').trim(),
     endpoint_url: endpointUrl || null,
+    tier: ['top', 'middle', 'bottom'].includes(tier) ? tier : 'middle',
     created_at: new Date().toISOString(),
     keys: [],
   };
@@ -78,6 +87,22 @@ export async function addProvider(name, category, endpointUrl = null) {
   return newProvider;
 }
 
+export async function updateProviderTier(providerId, newTier) {
+  const validTier = ['top', 'middle', 'bottom'].includes(newTier) ? newTier : 'middle';
+  const p = cachedProviders.find(prov => prov.id === providerId);
+  if (p) {
+    p.tier = validTier;
+  }
+  if (isSupabaseConfigured) {
+    try {
+      await supabase.from('providers').update({ tier: validTier }).eq('id', providerId);
+    } catch (e) {
+      console.warn('[ProviderRotator] Note updating provider tier:', e.message);
+    }
+  }
+  return { success: true, tier: validTier };
+}
+
 export async function deleteProvider(providerId) {
   if (isSupabaseConfigured) {
     const { error } = await supabase.from('providers').delete().eq('id', providerId);
@@ -90,24 +115,41 @@ export async function deleteProvider(providerId) {
 export async function addProviderKey(providerId, apiKey) {
   const cleanKey = apiKey.trim();
   const id = 'k' + Date.now();
+  const p = cachedProviders.find(p => p.id === providerId);
+
+  // 1. Instant live health verification and auto-detection
+  const probeResult = await testKeyLive(cleanKey, p?.endpoint_url);
+  const detected = detectKeyProvider(cleanKey);
+
   const newKey = {
     id,
     provider_id: providerId,
     api_key: cleanKey,
     masked_key: maskKey(cleanKey),
-    status: 'active',
-    failure_count: 0,
+    status: probeResult.status, // 'active' (green) or 'failed' (red)
+    detected_service: detected.service,
+    validation_message: probeResult.message,
+    failure_count: probeResult.valid ? 0 : 1,
     created_at: new Date().toISOString(),
     last_used: null,
     cooldown_until: null,
   };
 
   if (isSupabaseConfigured) {
-    const { error } = await supabase.from('provider_keys').insert([newKey]);
+    const { error } = await supabase.from('provider_keys').insert([{
+      id: newKey.id,
+      provider_id: newKey.provider_id,
+      api_key: newKey.api_key,
+      masked_key: newKey.masked_key,
+      status: newKey.status,
+      failure_count: newKey.failure_count,
+      created_at: newKey.created_at,
+      last_used: newKey.last_used,
+      cooldown_until: newKey.cooldown_until,
+    }]);
     if (error) throw error;
   }
 
-  const p = cachedProviders.find(p => p.id === providerId);
   if (p) p.keys.push(newKey);
 
   return newKey;
