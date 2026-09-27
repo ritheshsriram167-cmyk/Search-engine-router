@@ -28,11 +28,12 @@ CREATE TABLE IF NOT EXISTS brain_keys (
     cooldown_until TIMESTAMPTZ
 );
 
--- 3. Providers (Categories: News, Search, Data, Database, etc.)
+-- 3. Providers (Categories: News, Search, Weather, Data, Database, etc.)
 CREATE TABLE IF NOT EXISTS providers (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     category TEXT NOT NULL,
+    tier TEXT DEFAULT 'middle', -- 'top' | 'middle' | 'bottom'
     endpoint_url TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -43,6 +44,7 @@ CREATE TABLE IF NOT EXISTS provider_keys (
     provider_id TEXT REFERENCES providers(id) ON DELETE CASCADE,
     api_key TEXT NOT NULL,
     masked_key TEXT NOT NULL,
+    detected_service TEXT,
     status TEXT NOT NULL DEFAULT 'active', -- 'active' | 'rate-limited' | 'failed'
     failure_count INT DEFAULT 0,
     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -69,9 +71,10 @@ CREATE TABLE IF NOT EXISTS activity_logs (
 CREATE INDEX IF NOT EXISTS idx_activity_logs_timestamp ON activity_logs (timestamp DESC);
 
 -- Seed default initial providers if table is empty
-INSERT INTO providers (id, name, category) VALUES
-    ('p1', 'News', 'News & media'),
-    ('p2', 'Search', 'Web search'),
-    ('p3', 'Data', 'Structured data'),
-    ('p4', 'Database', 'Database lookup')
+INSERT INTO providers (id, name, category, tier) VALUES
+    ('p1', 'News', 'News & media', 'top'),
+    ('p2', 'Search', 'Web search', 'top'),
+    ('p3', 'Weather', 'Weather & climate', 'top'),
+    ('p4', 'Data', 'Structured data', 'middle'),
+    ('p5', 'Database', 'Database lookup', 'bottom')
 ON CONFLICT (id) DO NOTHING;

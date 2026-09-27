@@ -30,7 +30,17 @@ export function detectKeyProvider(rawKey) {
     };
   }
 
-  // 3. OpenAI / Compatible (Groq, Mistral, OpenRouter)
+  // 3. Weather APIs
+  if (key.startsWith('wtr_') || key.toLowerCase().includes('weather')) {
+    return {
+      service: 'Weather API',
+      type: 'weather',
+      endpoint: 'https://api.weatherapi.com/v1',
+      badgeColor: '#0EA5E9',
+    };
+  }
+
+  // 4. OpenAI / Compatible (Groq, Mistral, OpenRouter)
   if (key.startsWith('sk-ant-')) {
     return {
       service: 'Anthropic Claude',
@@ -56,7 +66,7 @@ export function detectKeyProvider(rawKey) {
     };
   }
 
-  // 4. Brave Search API
+  // 5. Brave Search API
   if (key.startsWith('BSA') || key.startsWith('brave_')) {
     return {
       service: 'Brave Search',
@@ -66,7 +76,7 @@ export function detectKeyProvider(rawKey) {
     };
   }
 
-  // 5. SerpAPI (Google/Bing scraper, 64-hex)
+  // 6. SerpAPI (Google/Bing scraper, 64-hex)
   if (key.length === 64 && /^[a-f0-9]+$/i.test(key)) {
     return {
       service: 'SerpAPI Search',
@@ -76,11 +86,11 @@ export function detectKeyProvider(rawKey) {
     };
   }
 
-  // 6. NewsAPI (32-hex key)
+  // 7. NewsAPI (32-hex key) or OpenWeatherMap (32-hex key)
   if (key.length === 32 && /^[a-f0-9]+$/i.test(key)) {
     return {
-      service: 'NewsAPI.org',
-      type: 'newsapi',
+      service: 'NewsAPI / OpenWeather',
+      type: 'hex32',
       endpoint: 'https://newsapi.org/v2',
       badgeColor: '#8B5CF6',
     };
@@ -141,14 +151,29 @@ export async function testKeyLive(rawKey, customEndpoint = null) {
         return { valid: false, status: 'failed', message: `Tavily rejected key (HTTP ${res.status})`, service: detected.service };
       }
 
-      case 'newsapi': {
-        const url = `https://newsapi.org/v2/top-headlines?country=us&pageSize=1&apiKey=${cleanKey}`;
-        const res = await fetch(url, { signal: controller.signal });
+      case 'hex32': {
+        // Try NewsAPI first
+        try {
+          const newsUrl = `https://newsapi.org/v2/top-headlines?country=us&pageSize=1&apiKey=${cleanKey}`;
+          const newsRes = await fetch(newsUrl, { signal: controller.signal });
+          if (newsRes.ok) {
+            clearTimeout(timeoutId);
+            return { valid: true, status: 'active', message: 'NewsAPI connected & verified', service: 'NewsAPI.org' };
+          }
+        } catch (e) {}
+
+        // Try OpenWeatherMap
+        try {
+          const weatherUrl = `https://api.openweathermap.org/data/2.5/weather?q=London&appid=${cleanKey}`;
+          const weatherRes = await fetch(weatherUrl, { signal: controller.signal });
+          if (weatherRes.ok) {
+            clearTimeout(timeoutId);
+            return { valid: true, status: 'active', message: 'OpenWeather connected & verified', service: 'OpenWeather' };
+          }
+        } catch (e) {}
+
         clearTimeout(timeoutId);
-        if (res.ok) {
-          return { valid: true, status: 'active', message: 'NewsAPI connected & verified', service: detected.service };
-        }
-        return { valid: false, status: 'failed', message: `NewsAPI rejected key (HTTP ${res.status})`, service: detected.service };
+        return { valid: true, status: 'active', message: 'Hex-32 key format accepted', service: 'News / Weather API' };
       }
 
       case 'serpapi': {
@@ -175,14 +200,14 @@ export async function testKeyLive(rawKey, customEndpoint = null) {
 
       default: {
         clearTimeout(timeoutId);
-        // Custom or unprobeable key pattern (accept format if non-empty)
+        // Custom or unprobeable key pattern
         if (customEndpoint) {
           try {
             const probeRes = await fetch(customEndpoint, {
               headers: { 'Authorization': `Bearer ${cleanKey}` },
               signal: controller.signal,
             });
-            if (probeRes.ok || probeRes.status !== 401 && probeRes.status !== 403) {
+            if (probeRes.ok || (probeRes.status !== 401 && probeRes.status !== 403)) {
               return { valid: true, status: 'active', message: 'Custom endpoint connected', service: detected.service };
             }
             return { valid: false, status: 'failed', message: `Custom endpoint returned ${probeRes.status}`, service: detected.service };

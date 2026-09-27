@@ -127,11 +127,29 @@ export async function classifyQuery(query, availableProviders = []) {
     return (tierWeight[a.tier] || 2) - (tierWeight[b.tier] || 2);
   });
 
-  const providerListStr = sortedProviders
-    .map(p => `${p.id}: ${p.name} (${p.category}${p.tier ? `, ${p.tier} priority` : ''})`)
-    .join(', ');
+  const providerDescriptions = sortedProviders.map(p => {
+    const activeKeyCount = (p.keys || []).filter(k => k.status === 'active').length;
+    const keyServices = (p.keys || []).map(k => k.detected_service || 'Key').join(', ');
+    return `- ID: "${p.id}", Name: "${p.name}", Category: "${p.category}", Tier: "${p.tier || 'middle'}", Active Keys: ${activeKeyCount} (${keyServices || 'none'})`;
+  }).join('\n');
 
-  const systemInstruction = `You are an ultra-fast search router. Classify the user query into exactly ONE provider ID from this list: [${providerListStr}]. Prioritize top priority providers when multiple match. Output ONLY the provider ID (e.g. p1 or p2). Nothing else.`;
+  const systemInstruction = `You are the Brain of an intelligent Search Engine Router.
+Analyze the user's search query carefully and select the SINGLE best matching Provider ID to handle this request.
+Categories:
+- Weather: forecasts, temperature, rain, climate, location-based weather conditions.
+- News: current events, breaking headlines, politics, world updates.
+- Search: general web lookups, definitions, knowledge topics.
+- Data: stock quotes, crypto, statistics, tabular records.
+- Database: technical queries, deep archive lookup.
+
+Available Providers:
+${providerDescriptions}
+
+Rules:
+1. Always pick a provider whose specialty fits the query intent (e.g. weather queries MUST go to a Weather/Climate or News provider, never a generic DB).
+2. If multiple providers fit, pick the highest priority Tier ("top" > "middle" > "bottom").
+3. Output a single JSON object with the selected provider ID and reason: {"providerId": "p1", "reason": "Weather query matched to weather/news provider"}
+Do not include any other markdown or text outside the JSON.`;
 
   // Try rotating through active keys on rate limits
   let attempts = 0;
@@ -149,11 +167,11 @@ export async function classifyQuery(query, availableProviders = []) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{
-            parts: [{ text: `${systemInstruction}\n\nQuery: "${query}"` }]
+            parts: [{ text: `${systemInstruction}\n\nUser Query: "${query}"` }]
           }],
           generationConfig: {
-            temperature: 0.0,
-            maxOutputTokens: 6,
+            temperature: 0.1,
+            maxOutputTokens: 60,
           }
         }),
       });
@@ -180,7 +198,7 @@ export async function classifyQuery(query, availableProviders = []) {
 
       const result = await response.json();
       const rawAnswer = result?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
-      
+
       // Update key last used
       keyObj.last_used = new Date().toISOString();
       updateKeyStatusInDb(keyObj.id, 'active');
@@ -188,15 +206,47 @@ export async function classifyQuery(query, availableProviders = []) {
       // Update rotation pointer for fair distribution
       currentIndex = (currentIndex + attempts) % activeKeys.length;
 
-      // Extract provider ID match
-      const matchedProvider = availableProviders.find(p =>
-        rawAnswer.toLowerCase().includes(p.id.toLowerCase()) ||
-        rawAnswer.toLowerCase().includes(p.name.toLowerCase())
-      ) || availableProviders[0] || { id: 'p2', category: 'Web search' };
+      // Parse JSON or extract ID pattern
+      let targetId = null;
+      try {
+        const jsonMatch = rawAnswer.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          targetId = parsed.providerId;
+        }
+      } catch (e) {}
+
+      // Fallback: inspect raw text for provider IDs or names
+      let matchedProvider = null;
+      if (targetId) {
+        matchedProvider = availableProviders.find(p => p.id.toLowerCase() === targetId.toLowerCase());
+      }
+      if (!matchedProvider) {
+        matchedProvider = availableProviders.find(p =>
+          rawAnswer.toLowerCase().includes(p.id.toLowerCase()) ||
+          rawAnswer.toLowerCase().includes(p.name.toLowerCase())
+        );
+      }
+
+      // Semantic rule-based fallback if Gemini output is ambiguous
+      if (!matchedProvider) {
+        const lowerQ = query.toLowerCase();
+        if (lowerQ.includes('weather') || lowerQ.includes('temperature') || lowerQ.includes('forecast') || lowerQ.includes('rain')) {
+          matchedProvider = availableProviders.find(p => p.category.toLowerCase().includes('weather') || p.name.toLowerCase().includes('weather'))
+            || availableProviders.find(p => p.name.toLowerCase().includes('news'));
+        } else if (lowerQ.includes('news') || lowerQ.includes('headline') || lowerQ.includes('latest')) {
+          matchedProvider = availableProviders.find(p => p.name.toLowerCase().includes('news') || p.category.toLowerCase().includes('news'));
+        }
+      }
+
+      if (!matchedProvider) {
+        matchedProvider = sortedProviders[0] || availableProviders[0] || { id: 'p2', category: 'Web search' };
+      }
 
       return {
         providerId: matchedProvider.id,
         category: matchedProvider.category,
+        providerName: matchedProvider.name,
         brainKeyId: keyObj.id,
         brainKeyMasked: keyObj.masked_key,
         latencyMs: Date.now() - startTime,
