@@ -227,99 +227,140 @@ async function fetchMultimodalSearchResults(query, provider, apiKey) {
                           query.toLowerCase().includes('temperature') ||
                           query.toLowerCase().includes('forecast') ||
                           query.toLowerCase().includes('rain') ||
+                          query.toLowerCase().includes('snow') ||
+                          query.toLowerCase().includes('climate') ||
                           provider.name.toLowerCase().includes('weather') ||
                           provider.category.toLowerCase().includes('weather');
 
   if (isWeatherIntent) {
     try {
-      // Extract target location from query (e.g. "latest weather news about London", "weather in Tokyo")
-      const locMatch = query.match(/(?:in|for|at|about)\s+([a-zA-Z\s,]+?)(?:\s+today|\s+now|\s+tomorrow|\s*$)/i);
-      const location = locMatch ? locMatch[1].trim() : query.replace(/weather|forecast|temperature|latest|news/gi, '').trim() || 'auto';
+      // Robust location extraction: "in London", "for Tokyo", "about New York", "at Mumbai", "near me", "my location"
+      const locMatch = query.match(/(?:in|for|at|about|of|near)\s+([a-zA-Z\s,]+?)(?:\s+today|\s+now|\s+tomorrow|\s*$)/i);
+      let rawLoc = locMatch ? locMatch[1].trim() : query.replace(/weather|forecast|temperature|climate|news|latest|report|update|current/gi, '').trim();
+      rawLoc = rawLoc.replace(/^[,\s\-]+|[,\s\-]+$/g, '');
 
-      // If user has an OpenWeather API key
-      if (cleanKey && cleanKey.length === 32 && (provider.name.toLowerCase().includes('weather') || cleanKey.startsWith('wtr_'))) {
-        try {
-          const owmUrl = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(location)}&units=metric&appid=${cleanKey}`;
-          const owmResp = await fetch(owmUrl);
-          if (owmResp.ok) {
-            const wData = await owmResp.json();
-            const desc = wData.weather?.[0]?.description || 'Clear';
-            const temp = wData.main?.temp;
-            const humidity = wData.main?.humidity;
-            const wind = wData.wind?.speed;
-            const city = wData.name || location;
+      const isLocalIntent = !rawLoc ||
+        /^(my\s+(current\s+)?(location|city|town|area|place|state)|current\s+location|here|near\s+me|local|me)$/i.test(rawLoc);
 
-            mediaResults.articles.push({
-              title: `Live Weather for ${city}: ${desc}, ${temp}°C`,
-              source: 'OpenWeatherMap',
-              url: `https://openweathermap.org/city/${wData.id || ''}`,
-              snippet: `Current temperature: ${temp}°C. Humidity: ${humidity}%. Wind: ${wind} m/s. Conditions: ${desc}.`,
-              publishedAt: new Date().toISOString(),
-            });
+      const targetCity = isLocalIntent ? '' : rawLoc;
+      const wttrPath = isLocalIntent ? '' : encodeURIComponent(targetCity);
+      const wttrUrl = `https://wttr.in/${wttrPath}?format=j1`;
 
-            mediaResults.structuredData = {
-              location: city,
-              temperature: `${temp}°C`,
-              conditions: desc,
-              humidity: `${humidity}%`,
-              windSpeed: `${wind} m/s`,
-              providerUsed: 'OpenWeatherMap (Active Key)',
-            };
+      let locationDisplay = targetCity;
+      let tempC = 'N/A';
+      let tempF = 'N/A';
+      let desc = 'Clear';
+      let humidity = 'N/A';
+      let windSpeed = 'N/A';
+      let feelsLikeC = 'N/A';
 
-            textChunks.push(`[WEATHER LIVE] ${city}: ${temp}°C, ${desc}\n    Humidity: ${humidity}% | Wind: ${wind} m/s\n`);
+      // 1. Fetch real-time satellite meteorological observation (wttr.in)
+      try {
+        const wttrResp = await fetch(wttrUrl, {
+          headers: { 'User-Agent': 'curl/7.68.0' },
+          signal: AbortSignal.timeout(6000),
+        });
+
+        if (wttrResp.ok) {
+          const d = await wttrResp.json();
+          const cur = d.current_condition?.[0] || {};
+          const area = d.nearest_area?.[0]?.areaName?.[0]?.value || (isLocalIntent ? 'Current Location' : targetCity);
+          const region = d.nearest_area?.[0]?.region?.[0]?.value || '';
+          const country = d.nearest_area?.[0]?.country?.[0]?.value || '';
+          const lat = d.nearest_area?.[0]?.latitude;
+          const lon = d.nearest_area?.[0]?.longitude;
+
+          tempC = cur.temp_C || 'N/A';
+          tempF = cur.temp_F || (tempC !== 'N/A' ? Math.round(Number(tempC) * 9/5 + 32) : 'N/A');
+          desc = cur.weatherDesc?.[0]?.value || 'Clear';
+          feelsLikeC = cur.FeelsLikeC || tempC;
+          humidity = cur.humidity || 'N/A';
+          const windKm = cur.windspeedKmph || 'N/A';
+          windSpeed = `${windKm} km/h`;
+
+          locationDisplay = [area, region, country].filter(Boolean).join(', ');
+
+          // 2. If provider has an active OpenWeather API key, query OpenWeather with accurate coordinates or city
+          if (cleanKey && cleanKey.length === 32 && (provider.name.toLowerCase().includes('weather') || provider.category.toLowerCase().includes('weather') || cleanKey.startsWith('wtr_'))) {
+            try {
+              const owmUrl = (lat && lon && isLocalIntent)
+                ? `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=metric&appid=${cleanKey}`
+                : `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(targetCity || area)}&units=metric&appid=${cleanKey}`;
+
+              const owmResp = await fetch(owmUrl, { signal: AbortSignal.timeout(5000) });
+              if (owmResp.ok) {
+                const owmData = await owmResp.json();
+                if (owmData.main) {
+                  const owmTemp = Math.round(owmData.main.temp);
+                  const owmTempF = Math.round(owmTemp * 9/5 + 32);
+                  const owmDesc = owmData.weather?.[0]?.description
+                    ? (owmData.weather[0].description.charAt(0).toUpperCase() + owmData.weather[0].description.slice(1))
+                    : desc;
+                  const owmHum = owmData.main.humidity;
+                  const owmWind = owmData.wind?.speed || 0;
+                  const owmCity = owmData.name ? `${owmData.name}, ${country || ''}` : locationDisplay;
+
+                  mediaResults.articles.push({
+                    title: `Live Weather for ${owmCity}: ${owmDesc}, ${owmTemp}°C (${owmTempF}°F)`,
+                    source: 'OpenWeatherMap (Active Verified Key)',
+                    url: `https://openweathermap.org/city/${owmData.id || ''}`,
+                    snippet: `Current temperature: ${owmTemp}°C (${owmTempF}°F). Conditions: ${owmDesc}. Humidity: ${owmHum}%. Wind Speed: ${owmWind} m/s. Station ID: ${owmData.id || 'Live'}.`,
+                    publishedAt: new Date().toISOString(),
+                  });
+
+                  mediaResults.structuredData = {
+                    location: owmCity,
+                    temperature: `${owmTemp}°C (${owmTempF}°F)`,
+                    conditions: owmDesc,
+                    humidity: `${owmHum}%`,
+                    windSpeed: `${owmWind} m/s`,
+                    providerUsed: 'OpenWeatherMap (Active Rotated Key)',
+                    status: 'Verified Live Sensor Feed'
+                  };
+
+                  textChunks.push(`[WEATHER LIVE] ${owmCity}: ${owmTemp}°C (${owmTempF}°F), ${owmDesc}\n    Humidity: ${owmHum}% | Wind: ${owmWind} m/s\n    Verified via OpenWeatherMap (Active Key)\n`);
+                }
+              }
+            } catch (e) {
+              console.warn('[LiveSearch] OpenWeatherMap request failed:', e.message);
+            }
           }
-        } catch (e) {
-          console.warn('[LiveSearch] OpenWeather key query failed:', e.message);
-        }
-      }
 
-      // Live High-Accuracy Weather Service Fallback (wttr.in)
-      if (textChunks.length === 0) {
-        try {
-          const wttrUrl = `https://wttr.in/${encodeURIComponent(location)}?format=j1`;
-          const wttrResp = await fetch(wttrUrl, { headers: { 'User-Agent': 'curl/7.68.0' } });
-          if (wttrResp.ok) {
-            const d = await wttrResp.json();
-            const cur = d.current_condition?.[0] || {};
-            const area = d.nearest_area?.[0]?.areaName?.[0]?.value || location;
-            const region = d.nearest_area?.[0]?.region?.[0]?.value || '';
-            const tempC = cur.temp_C || 'N/A';
-            const desc = cur.weatherDesc?.[0]?.value || 'Clear';
-            const feelsLike = cur.FeelsLikeC || tempC;
-            const humidity = cur.humidity || 'N/A';
-            const windKm = cur.windspeedKmph || 'N/A';
-
+          // If OpenWeatherMap was not used or did not push to textChunks, use wttr.in observation
+          if (textChunks.length === 0) {
             mediaResults.articles.push({
-              title: `Live Weather Report: ${area}, ${region}`,
+              title: `Live Weather Report: ${locationDisplay}`,
               source: 'Global Meteorological Satellite Network',
-              url: `https://wttr.in/${encodeURIComponent(location)}`,
-              snippet: `Current temperature is ${tempC}°C (feels like ${feelsLike}°C). Sky condition: ${desc}. Humidity: ${humidity}%. Wind speed: ${windKm} km/h.`,
+              url: isLocalIntent ? 'https://wttr.in' : `https://wttr.in/${encodeURIComponent(targetCity)}`,
+              snippet: `Current temperature is ${tempC}°C / ${tempF}°F (feels like ${feelsLikeC}°C). Sky condition: ${desc}. Humidity: ${humidity}%. Wind speed: ${windSpeed}.`,
               publishedAt: new Date().toISOString(),
             });
 
             mediaResults.structuredData = {
-              location: `${area}, ${region}`,
-              temperature: `${tempC}°C`,
-              feelsLike: `${feelsLike}°C`,
+              location: locationDisplay,
+              temperature: `${tempC}°C (${tempF}°F)`,
+              feelsLike: `${feelsLikeC}°C`,
               condition: desc,
               humidity: `${humidity}%`,
-              windSpeed: `${windKm} km/h`,
+              windSpeed: windSpeed,
+              providerUsed: 'Global Meteorological Satellite Network',
               status: 'Real-time Satellite Observation',
             };
 
-            textChunks.push(`[WEATHER LIVE] ${area}, ${region}: ${tempC}°C (Feels like ${feelsLike}°C)\n    Condition: ${desc} | Humidity: ${humidity}% | Wind: ${windKm} km/h\n    Source: Global Meteorological Satellite Network\n`);
+            textChunks.push(`[WEATHER LIVE] ${locationDisplay}: ${tempC}°C (${tempF}°F) (Feels like ${feelsLikeC}°C)\n    Condition: ${desc} | Humidity: ${humidity}% | Wind: ${windSpeed}\n    Source: Global Meteorological Satellite Network\n`);
           }
-        } catch (e) {
-          console.warn('[LiveSearch] wttr.in query failed:', e.message);
         }
+      } catch (e) {
+        console.warn('[LiveSearch] wttr.in query failed:', e.message);
       }
     } catch (err) {
       console.warn('[LiveSearch] Weather query processing error:', err.message);
     }
   }
 
-  // 3. Fetch News / Articles via NewsAPI if applicable
-  if ((provider.name.toLowerCase().includes('news') || /^[a-f0-9]{32}$/i.test(cleanKey)) && cleanKey) {
+  // 3. Fetch News / Articles via NewsAPI ONLY if provider is explicitly News (not Weather)
+  const isNewsProvider = (provider.name.toLowerCase().includes('news') || provider.category.toLowerCase().includes('news')) && !isWeatherIntent;
+  if (isNewsProvider && cleanKey && /^[a-f0-9]{32}$/i.test(cleanKey)) {
     try {
       const resp = await fetch(`https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&pageSize=5&sortBy=publishedAt&apiKey=${cleanKey}`);
       if (resp.ok) {

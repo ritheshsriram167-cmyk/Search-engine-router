@@ -108,11 +108,19 @@ export async function classifyQuery(query, availableProviders = []) {
 
   // Fallback if no brain keys configured
   if (activeKeys.length === 0) {
-    console.warn('[BrainRotator] No active brain keys found. Falling back to default category.');
+    console.warn('[BrainRotator] No active brain keys found. Falling back to rule matching.');
+    const lowerQ = query.toLowerCase();
+    const isExplicitWeather = /\b(weather|temperature|forecast|climate|rain|snow|humidity|storm|windspeed)\b/i.test(lowerQ);
+    const weatherProvider = availableProviders.find(p =>
+      p.name.toLowerCase().includes('weather') || p.category.toLowerCase().includes('weather')
+    );
+    const fallbackProv = (isExplicitWeather && weatherProvider) ? weatherProvider : (availableProviders[0] || { id: 'p2', category: 'Web search' });
     return {
-      providerId: availableProviders[0]?.id || 'p2',
-      category: availableProviders[0]?.category || 'Web search',
-      brainKeyId: 'none (fallback)',
+      providerId: fallbackProv.id,
+      category: fallbackProv.category,
+      providerName: fallbackProv.name,
+      brainKeyId: 'none (rule-fallback)',
+      brainKeyMasked: 'system-rule-routing',
       latencyMs: Date.now() - startTime,
     };
   }
@@ -134,22 +142,27 @@ export async function classifyQuery(query, availableProviders = []) {
   }).join('\n');
 
   const systemInstruction = `You are the Brain of an intelligent Search Engine Router.
-Analyze the user's search query carefully and select the SINGLE best matching Provider ID to handle this request.
-Categories:
-- Weather: forecasts, temperature, rain, climate, location-based weather conditions.
-- News: current events, breaking headlines, politics, world updates.
-- Search: general web lookups, definitions, knowledge topics.
-- Data: stock quotes, crypto, statistics, tabular records.
-- Database: technical queries, deep archive lookup.
+Analyze the user's search query carefully and select the SINGLE best matching Provider ID from the list below to handle this request.
 
 Available Providers:
 ${providerDescriptions}
 
-Rules:
-1. Always pick a provider whose specialty fits the query intent (e.g. weather queries MUST go to a Weather/Climate or News provider, never a generic DB).
-2. If multiple providers fit, pick the highest priority Tier ("top" > "middle" > "bottom").
-3. Output a single JSON object with the selected provider ID and reason: {"providerId": "p1", "reason": "Weather query matched to weather/news provider"}
-Do not include any other markdown or text outside the JSON.`;
+Selection Criteria:
+1. Weather Queries: If the query asks for weather, forecast, rain, snow, temperature, climate, storm, atmospheric conditions for any location (including user's location, e.g. "latest weather news about my location", "forecast in Tokyo"), you MUST select the provider dedicated to Weather (e.g. "Weather & Maps", "Weather", "Weather & climate"). DO NOT select News or general Web search for weather inquiries.
+2. News Queries: If the query asks for breaking news, headlines, current events, politics, or world updates (without weather focus), select the News provider.
+3. Search Queries: If the query is general research, knowledge, Wikipedia-style queries, or definitions, select the Web Search provider.
+4. Data / Crypto / Finance: Select Data / Database provider.
+
+Output requirement:
+Return ONLY a valid JSON object with the exact provider ID from the list above:
+{"providerId": "<EXACT_ID_FROM_LIST>", "reason": "<brief justification>"}`;
+
+  // Pre-check: if query is explicitly about weather, find dedicated weather provider
+  const lowerQ = query.toLowerCase();
+  const isExplicitWeather = /\b(weather|temperature|forecast|climate|rain|snow|humidity|storm|windspeed)\b/i.test(lowerQ);
+  const weatherProvider = availableProviders.find(p =>
+    p.name.toLowerCase().includes('weather') || p.category.toLowerCase().includes('weather')
+  );
 
   // Try rotating through active keys on rate limits
   let attempts = 0;
@@ -228,12 +241,15 @@ Do not include any other markdown or text outside the JSON.`;
         );
       }
 
+      // If query is explicitly about weather and a weather provider exists, ensure it is selected
+      if (isExplicitWeather && weatherProvider) {
+        matchedProvider = weatherProvider;
+      }
+
       // Semantic rule-based fallback if Gemini output is ambiguous
       if (!matchedProvider) {
-        const lowerQ = query.toLowerCase();
-        if (lowerQ.includes('weather') || lowerQ.includes('temperature') || lowerQ.includes('forecast') || lowerQ.includes('rain')) {
-          matchedProvider = availableProviders.find(p => p.category.toLowerCase().includes('weather') || p.name.toLowerCase().includes('weather'))
-            || availableProviders.find(p => p.name.toLowerCase().includes('news'));
+        if (isExplicitWeather) {
+          matchedProvider = weatherProvider || availableProviders.find(p => p.name.toLowerCase().includes('news'));
         } else if (lowerQ.includes('news') || lowerQ.includes('headline') || lowerQ.includes('latest')) {
           matchedProvider = availableProviders.find(p => p.name.toLowerCase().includes('news') || p.category.toLowerCase().includes('news'));
         }
@@ -258,10 +274,13 @@ Do not include any other markdown or text outside the JSON.`;
   }
 
   // If all attempts failed, gracefully fall back
+  const fallbackProv = (isExplicitWeather && weatherProvider) ? weatherProvider : (availableProviders[0] || { id: 'p2', category: 'Web search' });
   return {
-    providerId: availableProviders[0]?.id || 'p2',
-    category: availableProviders[0]?.category || 'Web search',
+    providerId: fallbackProv.id,
+    category: fallbackProv.category,
+    providerName: fallbackProv.name,
     brainKeyId: 'all-keys-exhausted',
+    brainKeyMasked: 'rule-fallback',
     latencyMs: Date.now() - startTime,
   };
 }
